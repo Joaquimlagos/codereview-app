@@ -1,0 +1,129 @@
+# PENDING CONFIGURATION — codereview-infra has not been deployed yet.
+# Before the "trigger-review" job can succeed end-to-end, set the following
+# in this repo's GitHub settings (Settings > Secrets and variables > Actions):
+#   - Secret   AWS_ROLE_ARN     — `terraform output -raw github_actions_pr_review_role_arn` in codereview-infra
+#   - Variable DIFF_BUCKET_NAME  — the PR diffs S3 bucket name (codereview-pr-diffs by default)
+#   - Variable EVENT_BUS_NAME    — the EventBridge bus name (codereview-bus by default)
+# See README.md, section "Configuração AWS (pendente)".
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  # Blocking: gates merging. Runs on both triggers (no "if" — it runs
+  # whenever the workflow itself runs), so main stays green on direct
+  # pushes too. Point branch protection's required check at this exact job
+  # name ("test").
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run tests
+        run: mvn --batch-mode test
+
+  # Non-blocking: runs independently of "test" (no "needs"), never gates
+  # merging. A failure here (e.g. AWS not configured yet) must not affect
+  # the "test" job's pass/fail status. PR-only: on a direct push to main
+  # there's no PR to diff against or to eventually comment on, so this job
+  # is skipped entirely (shows as "skipped", not "failed") on that trigger.
+  trigger-review:
+    name: Trigger AI review pipeline
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute diff against base branch
+        id: diff
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.sha }}
+        run: |
+          git fetch origin "$BASE_REF" --depth=1
+          git diff "origin/$BASE_REF"...HEAD > pr.diff
+          echo "diff_key=prs/$PR_NUMBER/$SHA.diff" >> "$GITHUB_OUTPUT"
+
+          # Lightweight stats derived from the same pr.diff already written
+          # above (git apply --numstat reads a patch file directly, no
+          # second git-diff invocation against the base branch) — these
+          # ride along in the EventBridge event so route-model can decide
+          # the complexity tier without fetching the full diff from S3.
+          git apply --numstat pr.diff > pr.numstat
+
+          files_changed=$(wc -l < pr.numstat | tr -d ' ')
+          lines_added=$(awk -F'\t' '{ if ($1 != "-") sum += $1 } END { print sum+0 }' pr.numstat)
+          lines_removed=$(awk -F'\t' '{ if ($2 != "-") sum += $2 } END { print sum+0 }' pr.numstat)
+          paths_json=$(awk -F'\t' '{ print $3 }' pr.numstat | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          {
+            echo "files_changed=$files_changed"
+            echo "lines_added=$lines_added"
+            echo "lines_removed=$lines_removed"
+            echo "paths=$paths_json"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Upload diff to S3 (claim check)
+        env:
+          DIFF_BUCKET_NAME: ${{ vars.DIFF_BUCKET_NAME }}
+          DIFF_KEY: ${{ steps.diff.outputs.diff_key }}
+        run: aws s3 cp pr.diff "s3://$DIFF_BUCKET_NAME/$DIFF_KEY"
+
+      - name: Publish PRReviewRequested event
+        env:
+          EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
+          DIFF_BUCKET_NAME: ${{ vars.DIFF_BUCKET_NAME }}
+          DIFF_KEY: ${{ steps.diff.outputs.diff_key }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          FILES_CHANGED: ${{ steps.diff.outputs.files_changed }}
+          LINES_ADDED: ${{ steps.diff.outputs.lines_added }}
+          LINES_REMOVED: ${{ steps.diff.outputs.lines_removed }}
+          PATHS_JSON: ${{ steps.diff.outputs.paths }}
+        run: |
+          detail=$(jq -n \
+            --argjson prNumber "$PR_NUMBER" \
+            --arg repository "$REPOSITORY" \
+            --arg sha "$SHA" \
+            --arg diffBucket "$DIFF_BUCKET_NAME" \
+            --arg diffKey "$DIFF_KEY" \
+            --argjson filesChanged "$FILES_CHANGED" \
+            --argjson linesAdded "$LINES_ADDED" \
+            --argjson linesRemoved "$LINES_REMOVED" \
+            --argjson paths "$PATHS_JSON" \
+            '{prNumber: $prNumber, repository: $repository, sha: $sha, diffBucket: $diffBucket, diffKey: $diffKey, filesChanged: $filesChanged, linesAdded: $linesAdded, linesRemoved: $linesRemoved, paths: $paths}')
+
+          entries=$(jq -n \
+            --arg bus "$EVENT_BUS_NAME" \
+            --arg detail "$detail" \
+            '[{Source: "codereview.app", DetailType: "PRReviewRequested", EventBusName: $bus, Detail: $detail}]')
+
+          aws events put-events --entries "$entries"
