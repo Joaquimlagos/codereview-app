@@ -16,6 +16,10 @@ final class InMemoryUsers {
     private InMemoryUsers() {
     }
 
+    static boolean exists(String username) {
+        return CREDENTIALS.containsKey(username);
+    }
+
     static boolean isValid(String username, String password) {
         return CREDENTIALS.getOrDefault(username, "").equals(password);
     }
