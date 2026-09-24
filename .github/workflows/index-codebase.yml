@@ -1,0 +1,50 @@
+# CONFIGURATION REQUIRED — codereview-infra is deployed and these AWS
+# resources exist; what's missing is registering their values by hand in
+# this repo's GitHub settings (Settings > Secrets and variables > Actions).
+# Until then this workflow fails at the AWS authentication step:
+#   - Secret   AWS_ROLE_ARN           — `terraform output -raw github_actions_pr_review_role_arn` in codereview-infra
+#   - Secret   GEMINI_API_KEY         — Google AI Studio API key used for the embedding calls
+#   - Variable ARTIFACTS_BUCKET_NAME  — the shared artifacts S3 bucket (codereview-artifacts)
+# See README.md, section "Configuração pendente".
+#
+# Indexes `develop`, not `main`: the AI review runs against PRs targeting
+# develop, so that's the code state the RAG index has to mirror.
+name: Index Codebase
+
+on:
+  push:
+    branches: [develop]
+
+jobs:
+  index:
+    name: Build and publish embedding index
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # GITHUB_SHA and GITHUB_REF_NAME are injected by Actions; only the
+      # API key has to be passed explicitly, since secrets never are.
+      - name: Build embedding index
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/build_index.py
+
+      - name: Upload index to S3
+        env:
+          ARTIFACTS_BUCKET_NAME: ${{ vars.ARTIFACTS_BUCKET_NAME }}
+        run: aws s3 cp index.json "s3://$ARTIFACTS_BUCKET_NAME/index/develop/index.json"
