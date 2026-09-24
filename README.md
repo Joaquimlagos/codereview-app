@@ -92,22 +92,82 @@ A partir daí, quem processa o evento é o `codereview-infra`
 (Step Functions) e o `codereview-lambda` (chamada ao LLM) — este
 repositório não sabe nada sobre como a revisão é feita.
 
-### Configuração AWS (pendente)
+## Índice de embeddings (RAG)
 
-O `codereview-infra` ainda não foi implantado, então os três valores abaixo
-ainda não existem de verdade. Depois do primeiro deploy do
-`codereview-infra`, configure em **Settings > Secrets and variables >
-Actions** deste repositório:
+O workflow `.github/workflows/index-codebase.yml` dispara a cada `push` na
+branch **`develop`** e reconstrói, do zero, o índice de embeddings que
+alimenta o RAG do pipeline de revisão. Ele roda `scripts/build_index.py`
+(Python puro, só stdlib) e publica o resultado no S3 em
+`index/develop/index.json`, no mesmo bucket de artefatos usado para os
+diffs.
 
-| Nome | Tipo | Onde encontrar |
-| --- | --- | --- |
-| `AWS_ROLE_ARN` | Secret | `terraform output -raw github_actions_pr_review_role_arn` no `codereview-infra` |
-| `DIFF_BUCKET_NAME` | Variable | Nome do bucket S3 de diffs (`codereview-pr-diffs` por padrão) |
-| `EVENT_BUS_NAME` | Variable | Nome do bus do EventBridge (`codereview-bus` por padrão) |
+**Por que `develop` e não `main`**: a análise por IA roda nos PRs que têm
+`develop` como base, então é o estado de código da `develop` que o índice
+precisa refletir. Indexar a `main` deixaria o RAG defasado em relação ao
+código que está de fato sendo revisado.
 
-Até lá, o job `trigger-review` do `pr-checks.yml` falha (mas não bloqueia o
-merge, já que roda com `continue-on-error: true` e sem `needs` em relação ao
-job `test`).
+### Formato do `index.json`
+
+Este arquivo é um **contrato compartilhado** com o `codereview-lambda`, que
+é quem lê o índice na etapa `RetrieveContext`. Mudanças de formato aqui
+quebram o consumidor lá — se mexer, incremente o `version` e alinhe os dois
+repositórios.
+
+```json
+{
+  "version": 1,
+  "branch": "develop",
+  "commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "generatedAt": "2026-09-22T14:03:11Z",
+  "model": "gemini-embedding-001",
+  "dimensions": 768,
+  "chunks": [
+    { "path": "src/main/java/com/codereview/app/tasks/TaskService.java", "text": "...", "vector": [0.013, -0.087, "..."] }
+  ]
+}
+```
+
+Só o campo `vector` vem da API do Gemini (`gemini-embedding-001`, com
+`outputDimensionality=768` e `taskType=RETRIEVAL_DOCUMENT`). Todo o resto é
+montado pelo próprio script: `path`/`text` saem do filesystem,
+`commit`/`branch` vêm do contexto do GitHub Actions, e `model`/`dimensions`
+são os próprios parâmetros que o script usou na chamada.
+
+**Um chunk por arquivo**: o `text` de cada chunk é o conteúdo **completo**
+do arquivo, sem nenhum split. É uma simplificação deliberada desta primeira
+versão, viável porque o projeto é pequeno. Se a base crescer a ponto de os
+arquivos estourarem o limite de tokens do modelo de embedding (ou de a
+recuperação ficar imprecisa demais por diluição), o passo natural é trocar
+por chunking por método/classe — o que exigirá bump do `version` e ajuste
+no `codereview-lambda`.
+
+São indexados os arquivos sob `src/`, mais `README.md` e `pom.xml`.
+`target/`, `.git/` e arquivos binários (qualquer coisa que não decodifique
+como UTF-8) ficam de fora.
+
+## Configuração pendente
+
+A infraestrutura já está no ar: o `codereview-infra` foi implantado e os
+recursos (role OIDC, bucket, event bus) existem de verdade. O que falta é
+só registrar os quatro valores abaixo em **Settings > Secrets and variables
+> Actions** deste repositório — nenhum passo de infraestrutura pendente.
+
+| Nome | Tipo | Usado por | Valor |
+| --- | --- | --- | --- |
+| `AWS_ROLE_ARN` | Secret | ambos os workflows | ARN da role OIDC (`terraform output -raw github_actions_pr_review_role_arn` no `codereview-infra`) |
+| `ARTIFACTS_BUCKET_NAME` | Variable | ambos os workflows | `codereview-artifacts` — guarda os diffs em `prs/` e o índice em `index/` |
+| `EVENT_BUS_NAME` | Variable | `pr-checks.yml` | `codereview-bus` |
+| `GEMINI_API_KEY` | Secret | `index-codebase.yml` | Chave de API do Google AI Studio, para as chamadas de embedding |
+
+O `GEMINI_API_KEY` é um secret **do GitHub Actions**, não do Secrets Manager
+— a chave do Secrets Manager é lida só pelas Lambdas, em runtime. São
+credenciais separadas, com escopos separados: este repositório nunca lê
+nada do Secrets Manager.
+
+Enquanto esses valores não forem preenchidos, a autenticação na AWS falha: o
+job `trigger-review` do `pr-checks.yml` falha (mas não bloqueia o merge, já
+que roda com `continue-on-error: true` e sem `needs` em relação ao job
+`test`), e o `index-codebase.yml` falha por inteiro.
 
 ## Convenções do projeto
 
