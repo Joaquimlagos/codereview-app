@@ -10,4 +10,4 @@ app:
     # Demo-only secret, not a real production value. Must stay >= 32 bytes
     # (256 bits) for the HMAC-SHA algorithm jjwt selects automatically.
     secret: change-this-demo-secret-key-please-32-bytes-min
-    expiration-minutes: 60
+    expiration-minutes: 55
