@@ -81,7 +81,9 @@ This repo only *triggers* the pipeline; it has no dependency on, and no knowledg
 
 Only `vector` comes from the Gemini API (`outputDimensionality=768`, `taskType=RETRIEVAL_DOCUMENT`). Everything else is assembled by the script itself: `path`/`text` from the filesystem, `commit`/`branch` from the Actions context, `model`/`dimensions` from the parameters the script chose for the call.
 
-**One chunk per file** — `text` is the entire file, never split. A deliberate first-version simplification, viable only because this project is small. Once files start exceeding the embedding model's token limit, or retrieval accuracy degrades from dilution, the next step is per-class/per-method chunking, which requires a `version` bump and a matching change in `codereview-lambda`. Indexed: everything under `src/`, plus `README.md` and `pom.xml`; `target/`, `.git/` and anything that doesn't decode as UTF-8 are skipped.
+**One chunk per file** — `text` is the entire file, never split. A deliberate first-version simplification, viable only because this project is small. Once files start exceeding the embedding model's token limit, or retrieval accuracy degrades from dilution, the next step is per-class/per-method chunking, which requires a `version` bump and a matching change in `codereview-lambda`.
+
+**Source only** — indexed: everything under `src/`, plus `pom.xml`; `target/`, `.git/` and anything that doesn't decode as UTF-8 are skipped. `README.md` is excluded on purpose: it explains that this repository exists as a test bed for the review pipeline, and feeding that to the reviewer as retrieved context biases it — the model starts reading diffs through "this repo exists to generate test PRs" instead of judging the code on its own terms. Keep the index to source and build definition; don't add prose files describing the project's purpose.
 
 `scripts/build_index.py` uses only the Python standard library (`urllib.request` for the HTTP calls) — nothing to `pip install` on the runner. Keep it that way; a dependency here would mean a install step in the workflow for a script that does one HTTP POST per file.
 

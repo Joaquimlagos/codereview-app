@@ -141,9 +141,19 @@ recuperação ficar imprecisa demais por diluição), o passo natural é trocar
 por chunking por método/classe — o que exigirá bump do `version` e ajuste
 no `codereview-lambda`.
 
-São indexados os arquivos sob `src/`, mais `README.md` e `pom.xml`.
-`target/`, `.git/` e arquivos binários (qualquer coisa que não decodifique
-como UTF-8) ficam de fora.
+### O que entra no índice
+
+São indexados os arquivos sob `src/` e o `pom.xml`. `target/`, `.git/` e
+arquivos binários (qualquer coisa que não decodifique como UTF-8) ficam de
+fora.
+
+**O `README.md` é deliberadamente excluído.** Ele descreve o propósito deste
+repositório — que é servir de cobaia para o pipeline de revisão — e, quando
+entra como contexto recuperado, isso enviesa o revisor: em vez de julgar o
+código pelo que ele é, o modelo passa a ler as mudanças à luz de "este repo
+existe para gerar PRs de teste". O índice do RAG deve conter só código-fonte
+e a definição de build; prosa sobre o propósito do projeto não acrescenta
+nada à revisão de um diff.
 
 ## Configuração pendente
 
