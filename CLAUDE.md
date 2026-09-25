@@ -92,6 +92,6 @@ One bucket (`codereview-artifacts`), split by prefix: PR diffs under `prs/`, the
 ## Code style
 
 See `.claude/rules/`:
-- `language.md` — English-only codebase (one exception: `README.md`, which stays in Portuguese).
+- `language.md` — English-only codebase, `README.md` included.
 - `java-conventions.md` — Java 21 / Spring Boot conventions (records, `Optional`, constructor injection, thin controllers).
 - `commits.md` — Conventional Commits, in English.
