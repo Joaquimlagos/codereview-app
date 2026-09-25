@@ -5,7 +5,7 @@
 #   - Secret   AWS_ROLE_ARN           — `terraform output -raw github_actions_pr_review_role_arn` in codereview-infra
 #   - Secret   GEMINI_API_KEY         — Google AI Studio API key used for the embedding calls
 #   - Variable ARTIFACTS_BUCKET_NAME  — the shared artifacts S3 bucket (codereview-artifacts)
-# See README.md, section "Configuração pendente".
+# See README.md, section "Pending configuration".
 #
 # Indexes `develop`, not `main`: the AI review runs against PRs targeting
 # develop, so that's the code state the RAG index has to mirror.
