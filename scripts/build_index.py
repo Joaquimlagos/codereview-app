@@ -18,7 +18,10 @@ EMBED_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{EMBEDDING
 
 OUTPUT_FILE = Path("index.json")
 INDEXED_DIRECTORIES = ("src",)
-INDEXED_FILES = ("README.md", "pom.xml")
+# Source and build definition only. Prose about what the repository is for
+# adds no retrieval value for a code review and skews the context the
+# reviewer receives, so README.md is deliberately left out.
+INDEXED_FILES = ("pom.xml",)
 EXCLUDED_DIRECTORIES = {"target", ".git"}
 
 # The free tier meters embedding calls per minute; one call per second leaves

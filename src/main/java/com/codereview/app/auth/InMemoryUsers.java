@@ -3,9 +3,8 @@ package com.codereview.app.auth;
 import java.util.Map;
 
 /**
- * Fixed, in-memory user store. Deliberately unsophisticated (plaintext
- * password comparison, no persistence) — this module exists to generate
- * "hard" complexity review PRs later, not to be production-grade auth.
+ * Fixed user store held in memory: passwords are compared in plaintext and
+ * nothing is persisted across restarts.
  */
 final class InMemoryUsers {
 

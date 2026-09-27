@@ -103,7 +103,9 @@ checkout → setup-python 3.12 → OIDC: configure-aws-credentials
 
 **Why `develop` and not `main`:** the AI review runs on pull requests targeting `develop`, so `develop` is the code state the index has to mirror. Indexing `main` would leave the retrieved context stale relative to the code actually being reviewed.
 
-[`scripts/build_index.py`](scripts/build_index.py) uses only the Python standard library, so the runner needs no dependency install step. It indexes everything under `src/`, plus `README.md` and `pom.xml`; `target/`, `.git/`, and anything that does not decode as UTF-8 are skipped.
+[`scripts/build_index.py`](scripts/build_index.py) uses only the Python standard library, so the runner needs no dependency install step. It indexes everything under `src/` plus `pom.xml`; `target/`, `.git/`, and anything that does not decode as UTF-8 are skipped.
+
+**`README.md` is excluded on purpose**, for two independent reasons. It describes what this repository is *for* — a test bed for the review pipeline — and feeding that to the reviewer as retrieved context biases the review: the model starts reading diffs through "this repo exists to generate test PRs" rather than judging the code on its own terms. It is also the one file large enough to hit the embedding model's 2,048-token input limit, which `gemini-embedding-001` enforces by silently discarding the overflow — a whole-file embedding of this README dropped roughly a quarter of it with no error and no warning. Keep the index limited to source and build definition.
 
 ### `index.json` format
 
