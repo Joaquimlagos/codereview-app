@@ -1,124 +1,120 @@
 # codereview-app
 
-API REST simples de gerenciamento de tarefas ("Task Manager"), em Java 21 +
-Spring Boot, com workflows do GitHub Actions (CI + testes) que autenticam via
-OIDC e disparam eventos de revisão de PR pelo EventBridge.
+GitHub Actions workflows (CI + tests) authenticating via OIDC that trigger PR review events through EventBridge.
 
-## Propósito
+## Trigger flow
 
-Este repositório **não é um produto real** — é uma aplicação "cobaia",
-propositalmente simples, criada para gerar pull requests de diferentes
-níveis de complexidade e testar um pipeline de revisão de código por IA.
-Faz parte de um projeto de portfólio dividido em 3 repositórios
-independentes:
+Everything below comes from [`.github/workflows/pr-checks.yml`](.github/workflows/pr-checks.yml) — the two jobs are independent (no `needs`), so they run in parallel.
 
-- **`codereview-app`** (este repositório) — dispara o evento de revisão via
-  GitHub Actions.
-- **`codereview-infra`** — EventBridge, Step Functions e IAM.
-- **`codereview-lambda`** — as funções Lambda: roteamento para o LLM,
-  contexto via RAG, e publicação do comentário de revisão no PR.
-
-Este repositório não conhece a implementação da análise de código — ele só
-dispara o pipeline via um evento no EventBridge.
-
-## Stack
-
-- Java 21 (LTS)
-- Spring Boot 3.5.x (via `spring-boot-starter-parent`)
-- Maven, módulo único (`pom.xml` na raiz)
-- `jjwt` para geração/validação de JWT (módulo `auth`)
-
-## Como rodar localmente
-
-Pré-requisitos: Java 21 e Maven instalados.
-
-```bash
-mvn spring-boot:run
+```text
+pull_request: opened │ synchronize │ reopened
+        │
+        ▼
+.github/workflows/pr-checks.yml
+        │
+        ├── job: test ──────────────── blocking gate, runs on every trigger
+        │     checkout → setup-java 21 (temurin) → mvn --batch-mode test
+        │
+        └── job: trigger-review ────── non-blocking, pull_request only
+              │
+              ├─ checkout PR head (fetch-depth: 0)
+              │
+              ├─ git diff origin/<base>...HEAD → pr.diff
+              │  git apply --numstat pr.diff   → filesChanged / linesAdded
+              │                                  linesRemoved / paths
+              │
+              ├─ aws-actions/configure-aws-credentials  ← OIDC, no static keys
+              │  (job declares permissions: id-token: write)
+              │
+              ├─ aws s3 cp pr.diff
+              │     s3://<artifacts-bucket>/prs/{pr}/{sha}.diff  ← claim check
+              │
+              └─ aws events put-events
+                    Source     = codereview.app
+                    DetailType = PRReviewRequested
+                    Detail     = PR metadata + S3 key, never the diff itself
+                          │
+                          ▼
+                  EventBridge custom bus
+                          │
+                          ▼
+   codereview-infra   rule → Step Functions state machine
+   codereview-lambda  RouteModel → RetrieveContext → InvokeLLM → PostComment
+                      └── review posted back onto the pull request
 ```
 
-A aplicação sobe na porta `8080` (ver `src/main/resources/application.yml`).
-Não é necessário banco de dados externo — as tasks ficam em memória e o
-login usa um usuário/senha fixos, também em memória.
+The diff travels through S3 rather than inside the event (claim-check pattern): EventBridge and Step Functions only carry PR metadata plus the object key. The lightweight stats ride along in the event so `codereview-lambda`'s `RouteModel` can pick a complexity tier without fetching the full diff from S3 in the common case.
 
-## Como rodar os testes
+## Part of a 3-repo pipeline
 
-```bash
-mvn test
+| Repository | Role |
+| --- | --- |
+| [`codereview-app`](https://github.com/Joaquimlagos/codereview-app) **(this repo)** | **Entry point.** Computes the PR diff in CI, authenticates to AWS via OIDC, uploads the diff to S3, and publishes the `PRReviewRequested` event that starts the pipeline. |
+| [`codereview-infra`](https://github.com/Joaquimlagos/codereview-infra) | Terraform for the AWS glue: EventBridge bus and rule, Step Functions state machine, the shared artifacts bucket, and the OIDC role this repo assumes. |
+| [`codereview-lambda`](https://github.com/Joaquimlagos/codereview-lambda) | The Lambda functions behind each Step Functions state: complexity routing, RAG context retrieval, the LLM call, and posting the review back to the PR. |
+
+This repository is the entry point and knows nothing about how the review itself works. It never calls an LLM, never posts a comment, and never reads pipeline internals — it publishes one event and stops. Everything downstream lives in the other two repositories.
+
+## Configuring OIDC authentication
+
+Both workflows reach AWS with short-lived credentials minted by GitHub's OIDC provider; no AWS access keys are stored in this repository. The AWS side is provisioned by `codereview-infra` (`oidc.tf`), which creates:
+
+1. **An OIDC identity provider** for `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`. Its thumbprint is read from GitHub's live TLS certificate rather than hardcoded, so it does not go stale when GitHub rotates certificates.
+
+2. **An IAM role whose trust policy is pinned to this repository.** GitHub sends the `sub` claim with the *immutable numeric IDs* of the owner account and the repository, not only their names:
+
+   ```
+   repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/<branch>
+   ```
+
+   The trust policy matches that exact shape — `repo:<owner>@<owner-id>/<repo>@<repo-id>:*` — with no wildcard on the owner or repo portion. Because names can change hands, pinning the IDs means a repository that was renamed, or deleted and re-created under the same name by someone else, no longer matches. A condition written against the name-only form (`repo:<owner>/<repo>:*`) never matches this claim at all, and `AssumeRoleWithWebIdentity` is denied.
+
+3. **A least-privilege policy** on that role: `events:PutEvents` on the pipeline's custom event bus, and `s3:PutObject` restricted to the `prs/` and `index/` prefixes of the artifacts bucket — not the bucket as a whole, since the same bucket also holds Terraform state.
+
+On the GitHub side, every job that talks to AWS declares the token permission explicitly:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
 ```
 
-## Módulos / tiers de complexidade
+Without `id-token: write`, GitHub never issues the OIDC token and the step fails even when the AWS role is configured correctly. The role ARN is read from the `AWS_ROLE_ARN` secret (see [Pending configuration](#pending-configuration)); no ARN, account ID, or bucket name is hardcoded in this repository.
 
-A aplicação é um "Task Manager" dividido em dois módulos, pensados para
-gerar PRs de complexidade diferente no futuro:
+## Embedding index workflow (RAG)
 
-- **`auth/`** — validação/geração de JWT (`JwtValidator`) e um endpoint de
-  login simples (`AuthController`), com usuário/senha fixos em memória, sem
-  nenhuma sofisticação de produção. Este módulo existe propositalmente para
-  gerar PRs de complexidade **hard**.
-- **`tasks/`** — CRUD de tarefas via REST (`GET/POST/PUT/DELETE /tasks`),
-  com armazenamento em memória (`TaskService`). Este módulo existe para
-  gerar PRs de complexidade **medium**.
+[`.github/workflows/index-codebase.yml`](.github/workflows/index-codebase.yml) runs on every `push` to **`develop`** and rebuilds, from scratch, the embedding index that feeds the pipeline's RAG step:
 
-Os dois módulos coexistem sem estarem de fato integrados nesta primeira
-versão — o CRUD de tasks não exige autenticação.
+```text
+push to develop
+        │
+        ▼
+checkout → setup-python 3.12 → OIDC: configure-aws-credentials
+        │
+        ├─ python scripts/build_index.py     → index.json
+        │    one Gemini embedding call per file (gemini-embedding-001,
+        │    outputDimensionality=768, taskType=RETRIEVAL_DOCUMENT)
+        │
+        └─ aws s3 cp index.json
+              s3://<artifacts-bucket>/index/develop/index.json
+```
 
-## Pipeline de revisão por IA
+`codereview-lambda`'s `RetrieveContext` reads that object to rank the project's files against the diff under review.
 
-Um único workflow, `.github/workflows/pr-checks.yml`, disparado tanto em
-`pull_request` (`opened`, `synchronize`, `reopened`) quanto em `push` para
-`main`, com dois jobs independentes (sem `needs` entre eles):
+**Why `develop` and not `main`:** the AI review runs on pull requests targeting `develop`, so `develop` is the code state the index has to mirror. Indexing `main` would leave the retrieved context stale relative to the code actually being reviewed.
 
-- **`test`** — build + testes (`mvn test`), bloqueante, sem condição `if:`
-  — roda nos dois gatilhos, então a `main` continua sendo validada mesmo em
-  push direto. É o check que a proteção de branch deve apontar como
-  obrigatório.
-- **`trigger-review`** — só roda em `pull_request` (`if:
-  github.event_name == 'pull_request'`; em push direto pra `main` não faz
-  sentido tentar disparar revisão de um PR que não existe, então o job
-  aparece como *skipped*, não *failed*). Não-bloqueante
-  (`continue-on-error: true`), que:
+[`scripts/build_index.py`](scripts/build_index.py) uses only the Python standard library, so the runner needs no dependency install step. It indexes everything under `src/`, plus `README.md` and `pom.xml`; `target/`, `.git/`, and anything that does not decode as UTF-8 are skipped.
 
-1. Calcula o diff do PR contra a branch base.
-2. Sobe o diff para um bucket S3 (padrão *claim-check*).
-3. Publica um evento `PRReviewRequested` no EventBridge, com o número do
-   PR, o repositório, o SHA, o ponteiro para o diff no S3, e estatísticas
-   leves do diff (`filesChanged`, `linesAdded`, `linesRemoved`, `paths`) —
-   derivadas do mesmo diff já computado no passo anterior, via
-   `git apply --numstat`. Esses metadados existem para que o `route-model`
-   do `codereview-lambda` consiga decidir o tier de complexidade sem
-   precisar buscar o diff completo no S3 na maioria dos casos.
+### `index.json` format
 
-A partir daí, quem processa o evento é o `codereview-infra`
-(Step Functions) e o `codereview-lambda` (chamada ao LLM) — este
-repositório não sabe nada sobre como a revisão é feita.
-
-## Índice de embeddings (RAG)
-
-O workflow `.github/workflows/index-codebase.yml` dispara a cada `push` na
-branch **`develop`** e reconstrói, do zero, o índice de embeddings que
-alimenta o RAG do pipeline de revisão. Ele roda `scripts/build_index.py`
-(Python puro, só stdlib) e publica o resultado no S3 em
-`index/develop/index.json`, no mesmo bucket de artefatos usado para os
-diffs.
-
-**Por que `develop` e não `main`**: a análise por IA roda nos PRs que têm
-`develop` como base, então é o estado de código da `develop` que o índice
-precisa refletir. Indexar a `main` deixaria o RAG defasado em relação ao
-código que está de fato sendo revisado.
-
-### Formato do `index.json`
-
-Este arquivo é um **contrato compartilhado** com o `codereview-lambda`, que
-é quem lê o índice na etapa `RetrieveContext`. Mudanças de formato aqui
-quebram o consumidor lá — se mexer, incremente o `version` e alinhe os dois
-repositórios.
+This file is a **shared contract** with `codereview-lambda`. A format change here breaks the consumer there — bump `version` and align both repositories.
 
 ```json
 {
   "version": 1,
   "branch": "develop",
-  "commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-  "generatedAt": "2026-09-22T14:03:11Z",
+  "commit": "<full 40-char sha>",
+  "generatedAt": "<ISO 8601 UTC>",
   "model": "gemini-embedding-001",
   "dimensions": 768,
   "chunks": [
@@ -127,49 +123,54 @@ repositórios.
 }
 ```
 
-Só o campo `vector` vem da API do Gemini (`gemini-embedding-001`, com
-`outputDimensionality=768` e `taskType=RETRIEVAL_DOCUMENT`). Todo o resto é
-montado pelo próprio script: `path`/`text` saem do filesystem,
-`commit`/`branch` vêm do contexto do GitHub Actions, e `model`/`dimensions`
-são os próprios parâmetros que o script usou na chamada.
+Only `vector` comes from the Gemini API. Everything else is assembled by the script: `path`/`text` from the filesystem, `commit`/`branch` from the Actions context, and `model`/`dimensions` from the parameters the script itself used for the call.
 
-**Um chunk por arquivo**: o `text` de cada chunk é o conteúdo **completo**
-do arquivo, sem nenhum split. É uma simplificação deliberada desta primeira
-versão, viável porque o projeto é pequeno. Se a base crescer a ponto de os
-arquivos estourarem o limite de tokens do modelo de embedding (ou de a
-recuperação ficar imprecisa demais por diluição), o passo natural é trocar
-por chunking por método/classe — o que exigirá bump do `version` e ajuste
-no `codereview-lambda`.
+**One chunk per file** — each chunk's `text` is the *entire* file, never split. A deliberate first-version simplification, viable because this project is small. Once files start exceeding the embedding model's token limit, or retrieval accuracy degrades from dilution, the next step is per-class/per-method chunking, which requires a `version` bump and a matching change in `codereview-lambda`.
 
-São indexados os arquivos sob `src/`, mais `README.md` e `pom.xml`.
-`target/`, `.git/` e arquivos binários (qualquer coisa que não decodifique
-como UTF-8) ficam de fora.
+## The application under test
 
-## Configuração pendente
+This repository is **not a real product.** It is a deliberately simple "guinea pig" application whose purpose is to generate pull requests of varying complexity so the AI review pipeline can be exercised against them.
 
-A infraestrutura já está no ar: o `codereview-infra` foi implantado e os
-recursos (role OIDC, bucket, event bus) existem de verdade. O que falta é
-só registrar os quatro valores abaixo em **Settings > Secrets and variables
-> Actions** deste repositório — nenhum passo de infraestrutura pendente.
+- Java 21 (LTS), Spring Boot 3.5.x via `spring-boot-starter-parent`
+- Maven, single module, `pom.xml` at the repository root
+- `jjwt` for JWT generation/validation
 
-| Nome | Tipo | Usado por | Valor |
+Two modules, sized to produce different review complexity tiers:
+
+- **`auth/`** — JWT generation/validation (`JwtValidator`) and a simple login endpoint (`AuthController`), backed by fixed in-memory credentials with no production hardening. Intended to seed **hard**-tier review PRs.
+- **`tasks/`** — task CRUD over REST (`GET/POST/PUT/DELETE /tasks`) with in-memory storage (`TaskService`). Intended to seed **medium**-tier review PRs.
+
+The two modules are intentionally independent at this stage: task CRUD has no authentication wired into it.
+
+### Running it
+
+Requires Java 21 and Maven.
+
+```bash
+mvn spring-boot:run
+```
+
+Starts on port `8080` (see [`src/main/resources/application.yml`](src/main/resources/application.yml)). No external database or service is needed — tasks are held in memory and login uses fixed in-memory credentials.
+
+```bash
+mvn test
+```
+
+## Pending configuration
+
+The infrastructure is already deployed: `codereview-infra` was applied and the OIDC role, artifacts bucket, and event bus all exist. What remains is registering the four values below under **Settings > Secrets and variables > Actions** in this repository — no infrastructure step is outstanding.
+
+| Name | Type | Used by | Value |
 | --- | --- | --- | --- |
-| `AWS_ROLE_ARN` | Secret | ambos os workflows | ARN da role OIDC (`terraform output -raw github_actions_pr_review_role_arn` no `codereview-infra`) |
-| `ARTIFACTS_BUCKET_NAME` | Variable | ambos os workflows | `codereview-artifacts` — guarda os diffs em `prs/` e o índice em `index/` |
-| `EVENT_BUS_NAME` | Variable | `pr-checks.yml` | `codereview-bus` |
-| `GEMINI_API_KEY` | Secret | `index-codebase.yml` | Chave de API do Google AI Studio, para as chamadas de embedding |
+| `AWS_ROLE_ARN` | Secret | both workflows | ARN of the OIDC role (`terraform output -raw github_actions_pr_review_role_arn` in `codereview-infra`) |
+| `ARTIFACTS_BUCKET_NAME` | Variable | both workflows | Name of the shared artifacts bucket — PR diffs under `prs/`, the embedding index under `index/` |
+| `EVENT_BUS_NAME` | Variable | `pr-checks.yml` | Name of the pipeline's EventBridge bus |
+| `GEMINI_API_KEY` | Secret | `index-codebase.yml` | Google AI Studio API key used for the embedding calls |
 
-O `GEMINI_API_KEY` é um secret **do GitHub Actions**, não do Secrets Manager
-— a chave do Secrets Manager é lida só pelas Lambdas, em runtime. São
-credenciais separadas, com escopos separados: este repositório nunca lê
-nada do Secrets Manager.
+`GEMINI_API_KEY` is a **GitHub Actions** secret, distinct from the Secrets Manager secret the Lambdas read at runtime. They are separate credentials with separate scopes: this repository never reads anything from Secrets Manager.
 
-Enquanto esses valores não forem preenchidos, a autenticação na AWS falha: o
-job `trigger-review` do `pr-checks.yml` falha (mas não bloqueia o merge, já
-que roda com `continue-on-error: true` e sem `needs` em relação ao job
-`test`), e o `index-codebase.yml` falha por inteiro.
+Until these are set, AWS authentication fails: the `trigger-review` job of `pr-checks.yml` fails (without blocking merges, since it runs with `continue-on-error: true` and no `needs` relationship to `test`), and `index-codebase.yml` fails outright.
 
-## Convenções do projeto
+## Project conventions
 
-Ver `CLAUDE.md` e `.claude/rules/` para as convenções de código, idioma e
-commits adotadas neste repositório.
+See [`CLAUDE.md`](CLAUDE.md) and [`.claude/rules/`](.claude/rules/) for the code, language, and commit conventions used in this repository.
