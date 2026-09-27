@@ -60,6 +60,17 @@ class TaskControllerTest {
     }
 
     @Test
+    void createReturnsBadRequestWhenTitleIsInvalid() throws Exception {
+        when(taskService.create(any(Task.class)))
+                .thenThrow(new InvalidTaskException("title must not be blank"));
+
+        mockMvc.perform(post("/tasks")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsString(new Task(null, " ", "desc", false))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void deleteReturnsNoContentWhenExisted() throws Exception {
         when(taskService.delete(1L)).thenReturn(true);
 

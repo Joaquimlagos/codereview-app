@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class TaskService {
 
+    private static final int MAX_TITLE_LENGTH = 120;
+
     private final Map<Long, Task> tasks = new ConcurrentHashMap<>();
     private final AtomicLong nextId = new AtomicLong(1);
 
@@ -23,6 +25,7 @@ public class TaskService {
     }
 
     public Task create(Task task) {
+        validateTitle(task);
         long id = nextId.getAndIncrement();
         Task created = new Task(id, task.title(), task.description(), task.completed());
         tasks.put(id, created);
@@ -30,6 +33,7 @@ public class TaskService {
     }
 
     public Optional<Task> update(Long id, Task task) {
+        validateTitle(task);
         if (!tasks.containsKey(id)) {
             return Optional.empty();
         }
@@ -40,5 +44,15 @@ public class TaskService {
 
     public boolean delete(Long id) {
         return tasks.remove(id) != null;
+    }
+
+    private void validateTitle(Task task) {
+        String title = task.title();
+        if (title == null || title.isBlank()) {
+            throw new InvalidTaskException("title must not be blank");
+        }
+        if (title.length() > MAX_TITLE_LENGTH) {
+            throw new InvalidTaskException("title must be at most " + MAX_TITLE_LENGTH + " characters");
+        }
     }
 }

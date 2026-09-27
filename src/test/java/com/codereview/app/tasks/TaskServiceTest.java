@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 class TaskServiceTest {
 
@@ -44,6 +45,30 @@ class TaskServiceTest {
         assertThat(updated).isPresent();
         assertThat(updated.get().title()).isEqualTo("Updated");
         assertThat(updated.get().completed()).isTrue();
+    }
+
+    @Test
+    void createRejectsBlankTitle() {
+        assertThatExceptionOfType(InvalidTaskException.class)
+                .isThrownBy(() -> taskService.create(new Task(null, "   ", "desc", false)))
+                .withMessageContaining("must not be blank");
+    }
+
+    @Test
+    void createRejectsTitleOverTheLengthLimit() {
+        String tooLong = "x".repeat(121);
+
+        assertThatExceptionOfType(InvalidTaskException.class)
+                .isThrownBy(() -> taskService.create(new Task(null, tooLong, "desc", false)))
+                .withMessageContaining("at most 120");
+    }
+
+    @Test
+    void updateRejectsBlankTitle() {
+        Task created = taskService.create(new Task(null, "Title", "desc", false));
+
+        assertThatExceptionOfType(InvalidTaskException.class)
+                .isThrownBy(() -> taskService.update(created.id(), new Task(null, "", "desc", false)));
     }
 
     @Test
