@@ -6,7 +6,7 @@
 #   - Variable ARTIFACTS_BUCKET_NAME  — the shared artifacts S3 bucket (codereview-artifacts),
 #                                       which holds PR diffs under prs/ and the RAG index under index/
 #   - Variable EVENT_BUS_NAME         — the EventBridge bus name (codereview-bus)
-# See README.md, section "Configuração pendente".
+# See README.md, section "Pending configuration".
 name: PR Checks
 
 on:
