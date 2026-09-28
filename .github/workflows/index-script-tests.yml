@@ -1,0 +1,38 @@
+# Tests for the RAG index builder (scripts/build_index.py, scripts/chunking.py). Runs only
+# when the builder or its workflows change, so Java-only pull requests don't pay for it.
+# Not a required check: branch protection gates merging on pr-checks.yml's `test` job only.
+# The tests need no secrets and no network: the embedding API is a local stub server.
+name: Index Script Tests
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/index-*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Index builder tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install index dependencies
+        run: pip install -r scripts/requirements-index.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s scripts/tests -t scripts -v
+
+      # The same chunking the index build does, against this branch's real sources: fails
+      # on a duplicate id or a chunk over the embedding limit, before anything is published.
+      - name: Dry-run the index build
+        run: python scripts/build_index.py --dry-run
