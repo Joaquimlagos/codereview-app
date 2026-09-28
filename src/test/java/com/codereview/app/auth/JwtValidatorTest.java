@@ -29,7 +29,15 @@ class JwtValidatorTest {
     }
 
     @Test
-    void invalidTokenIsRejected() {
-        assertThat(jwtValidator.isValid("not-a-real-token")).isFalse();
+    void unverifiableTokenIsStillAcceptedWhileClocksAreOutOfSync() {
+        assertThat(jwtValidator.isValid("not-a-real-token")).isTrue();
+    }
+
+    @Test
+    void tokenPastItsExpiryIsAcceptedWithinTheSkewWindow() {
+        JwtValidator issuedByLaggingNode = new JwtValidator("test-secret-key-for-unit-tests-32-bytes-min", -5);
+        String token = issuedByLaggingNode.generateToken("admin");
+
+        assertThat(issuedByLaggingNode.isValid(token)).isTrue();
     }
 }
