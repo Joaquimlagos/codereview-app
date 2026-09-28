@@ -68,10 +68,15 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SHA: ${{ github.sha }}
+          CONFIG_FILE: .codereview.yml
         run: |
-          # Full history of the base branch, not --depth=1: the merge base is an
-          # older commit whenever the base advanced after this branch was cut, and
-          # a shallow fetch leaves it out of the local graph ("no merge base").
+          # Full history of the base branch, not --depth=1. Checkout resolves the
+          # PR's merge ref, whose first parent is the base tip as of when GitHub
+          # last computed that ref, and --depth=1 truncates origin/<base> to a
+          # single parentless commit. That only breaks when the merge ref is stale
+          # relative to the base branch — the base advanced and GitHub had not
+          # recomputed the ref yet — but then the real merge base sits behind that
+          # parentless commit and git gives up with "no merge base".
           # The base SHA from the event payload is not a substitute — that is the
           # base branch tip, not the merge base, so diffing against it would fold
           # the base's own newer commits into this PR's diff, inverted.
@@ -79,7 +84,52 @@ jobs:
 
           merge_base=$(git merge-base "origin/$BASE_REF" HEAD)
           echo "diffing against merge base $merge_base"
-          git diff "$merge_base" HEAD > pr.diff
+
+          # Exclusions are read from the merge base, never from the PR head: a PR
+          # must not be able to add its own files to the exclusion list and slip
+          # past review. A change to the config therefore only takes effect once
+          # it is merged.
+          if git cat-file -e "$merge_base:$CONFIG_FILE" 2>/dev/null; then
+            echo "reading exclusions from $CONFIG_FILE at the merge base"
+            mapfile -t patterns < <(git show "$merge_base:$CONFIG_FILE" | yq '.exclude[]')
+            if [ "${#patterns[@]}" -eq 0 ]; then
+              echo "::warning::$CONFIG_FILE has no 'exclude' list; reviewing every changed file"
+            fi
+          else
+            echo "no $CONFIG_FILE at the merge base; using the default exclusions"
+            patterns=(
+              # Documentation
+              "*.md" "*.txt" "docs/**" "LICENSE"
+              # Generated and lock files
+              "*.lock" "**/target/**"
+              # Binaries and media. *.svg is deliberately absent: it is text, it
+              # can carry script, and excluding it would create a blind spot.
+              "*.png" "*.jpg" "*.jpeg" "*.gif" "*.ico" "*.webp" "*.pdf"
+              "*.zip" "*.jar" "*.class" "*.woff" "*.woff2" "*.ttf" "*.otf"
+            )
+          fi
+
+          # YAML/workflow files are never excluded by default — CI configuration is
+          # security-relevant and has to stay reviewable.
+          pathspecs=()
+          for pattern in "${patterns[@]}"; do
+            [ -n "$pattern" ] && pathspecs+=(":(exclude)$pattern")
+          done
+          echo "excluding ${#pathspecs[@]} pattern(s) from the reviewed diff"
+
+          git diff "$merge_base" HEAD -- . "${pathspecs[@]}" > pr.diff
+
+          # Every changed file matched an exclusion, so there is nothing for the
+          # reviewer to look at. Stop here rather than publishing an event: the
+          # pipeline would embed an empty diff, which the embeddings API rejects
+          # outright ("content contains an empty Part"), and `git apply --numstat`
+          # below refuses an empty patch anyway.
+          if [ ! -s pr.diff ]; then
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            echo "no reviewable files in this change; skipping the review pipeline"
+            exit 0
+          fi
+          echo "reviewable=true" >> "$GITHUB_OUTPUT"
 
           echo "diff_key=prs/$PR_NUMBER/$SHA.diff" >> "$GITHUB_OUTPUT"
 
@@ -102,19 +152,42 @@ jobs:
             echo "paths=$paths_json"
           } >> "$GITHUB_OUTPUT"
 
+      # Nothing was excluded from the PR itself — every file is still there on
+      # GitHub — but none of what changed is analysed, so say so rather than
+      # leaving a silence that reads like the reviewer found nothing.
+      - name: Report that there is nothing to review
+        if: steps.diff.outputs.reviewable == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### No reviewable files"
+            echo ""
+            echo "Every file changed here matches the review exclusion list, so no diff"
+            echo "was sent to the pipeline and no AI review will appear. The files are"
+            echo "untouched on the pull request itself."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh pr comment "$PR_NUMBER" --body \
+            "No automated review for this commit: every changed file matches the review exclusion list (documentation, generated files, binaries), so there was nothing to analyse. The files themselves are unaffected — this only skips the AI review."
+
       - name: Configure AWS credentials (OIDC)
+        if: steps.diff.outputs.reviewable == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: Upload diff to S3 (claim check)
+        if: steps.diff.outputs.reviewable == 'true'
         env:
           ARTIFACTS_BUCKET_NAME: ${{ vars.ARTIFACTS_BUCKET_NAME }}
           DIFF_KEY: ${{ steps.diff.outputs.diff_key }}
         run: aws s3 cp pr.diff "s3://$ARTIFACTS_BUCKET_NAME/$DIFF_KEY"
 
       - name: Publish PRReviewRequested event
+        if: steps.diff.outputs.reviewable == 'true'
         env:
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
           ARTIFACTS_BUCKET_NAME: ${{ vars.ARTIFACTS_BUCKET_NAME }}
@@ -144,7 +217,19 @@ jobs:
             --arg detail "$detail" \
             '[{Source: "codereview.app", DetailType: "PRReviewRequested", EventBusName: $bus, Detail: $detail}]')
 
-          aws events put-events --entries "$entries"
+          # put-events answers 200 even when it rejects an entry, reporting the
+          # rejection only in the body. Without this check a refused event looks
+          # like a published one, and the review simply never arrives.
+          response=$(aws events put-events --entries "$entries")
+          failed=$(jq -r '.FailedEntryCount' <<<"$response")
+
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::EventBridge rejected $failed of 1 entry"
+            jq -r '.Entries[] | select(.ErrorCode) | "  \(.ErrorCode): \(.ErrorMessage)"' <<<"$response" >&2
+            exit 1
+          fi
+
+          echo "event published: $(jq -r '.Entries[0].EventId' <<<"$response")"
 
       # Reaching here means no event was published, so no review will ever
       # appear on the PR. Say so where people actually look, instead of
