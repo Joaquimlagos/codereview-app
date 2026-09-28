@@ -26,6 +26,21 @@ class TaskServiceTest {
     }
 
     @Test
+    void findAllIsEmptyBeforeAnythingIsCreated() {
+        assertThat(taskService.findAll()).isEmpty();
+    }
+
+    @Test
+    void findAllReturnsEveryCreatedTask() {
+        Task first = taskService.create(new Task(null, "First", "desc", false));
+        Task second = taskService.create(new Task(null, "Second", "desc", true));
+
+        assertThat(taskService.findAll())
+                .extracting(Task::id)
+                .containsExactlyInAnyOrder(first.id(), second.id());
+    }
+
+    @Test
     void findByIdReturnsEmptyWhenMissing() {
         assertThat(taskService.findById(99L)).isEmpty();
     }
