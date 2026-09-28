@@ -171,7 +171,7 @@ The infrastructure is already deployed: `codereview-infra` was applied and the O
 
 `GEMINI_API_KEY` is a **GitHub Actions** secret, distinct from the Secrets Manager secret the Lambdas read at runtime. They are separate credentials with separate scopes: this repository never reads anything from Secrets Manager.
 
-Until these are set, AWS authentication fails: the `trigger-review` job of `pr-checks.yml` fails (without blocking merges, since it runs with `continue-on-error: true` and no `needs` relationship to `test`), and `index-codebase.yml` fails outright.
+Until these are set, AWS authentication fails: the `trigger-review` job of `pr-checks.yml` fails — reported as a red check, but not blocking the merge, since branch protection requires only `test` — and `index-codebase.yml` fails outright. When `trigger-review` fails it also comments on the pull request, so the absence of a review is never silent.
 
 ## Project conventions
 

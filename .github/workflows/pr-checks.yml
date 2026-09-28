@@ -37,19 +37,25 @@ jobs:
       - name: Run tests
         run: mvn --batch-mode test
 
-  # Non-blocking: runs independently of "test" (no "needs"), never gates
-  # merging. A failure here (e.g. AWS not configured yet) must not affect
-  # the "test" job's pass/fail status. PR-only: on a direct push to main
-  # there's no PR to diff against or to eventually comment on, so this job
-  # is skipped entirely (shows as "skipped", not "failed") on that trigger.
+  # Independent of "test" (no "needs"). Merging is gated by branch protection,
+  # which requires only the "test" check, so a failure here reports red without
+  # blocking the merge. "continue-on-error" is deliberately not used: it also
+  # suppresses the red, and that is what hid a broken diff step here for days.
+  #
+  # Only the publishing side of the pipeline runs in this job — compute the
+  # diff, upload it, emit the event. The model calls happen afterwards inside
+  # the Step Functions execution, so an unavailable LLM cannot fail this check.
+  #
+  # PR-only: on a direct push to main there's no PR to diff against or to
+  # comment on, so this job is skipped entirely on that trigger.
   trigger-review:
     name: Trigger AI review pipeline
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    continue-on-error: true
     permissions:
       id-token: write
       contents: read
+      pull-requests: write
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -63,8 +69,18 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SHA: ${{ github.sha }}
         run: |
-          git fetch origin "$BASE_REF" --depth=1
-          git diff "origin/$BASE_REF"...HEAD > pr.diff
+          # Full history of the base branch, not --depth=1: the merge base is an
+          # older commit whenever the base advanced after this branch was cut, and
+          # a shallow fetch leaves it out of the local graph ("no merge base").
+          # The base SHA from the event payload is not a substitute — that is the
+          # base branch tip, not the merge base, so diffing against it would fold
+          # the base's own newer commits into this PR's diff, inverted.
+          git fetch origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+
+          merge_base=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "diffing against merge base $merge_base"
+          git diff "$merge_base" HEAD > pr.diff
+
           echo "diff_key=prs/$PR_NUMBER/$SHA.diff" >> "$GITHUB_OUTPUT"
 
           # Lightweight stats derived from the same pr.diff already written
@@ -129,3 +145,24 @@ jobs:
             '[{Source: "codereview.app", DetailType: "PRReviewRequested", EventBusName: $bus, Detail: $detail}]')
 
           aws events put-events --entries "$entries"
+
+      # Reaching here means no event was published, so no review will ever
+      # appear on the PR. Say so where people actually look, instead of
+      # leaving a silent gap that reads like the reviewer had no findings.
+      - name: Report that the review was not triggered
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "### Automated review not triggered"
+            echo ""
+            echo "This job failed before publishing the review event, so no AI review will"
+            echo "appear on this pull request. Merging is not blocked — only the \`test\` job"
+            echo "gates it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh pr comment "$PR_NUMBER" --body \
+            "No automated review for this commit: the \`trigger-review\` job failed before publishing the event, so the pipeline never started. Merging is not blocked. [Run log]($RUN_URL)"
