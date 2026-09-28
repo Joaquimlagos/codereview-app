@@ -1,0 +1,4 @@
+# Deliberately misspelled key ("excludes" instead of "exclude") to exercise the
+# fallback: the workflow should warn and exclude nothing.
+excludes:
+  - "*.md"
