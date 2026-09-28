@@ -191,7 +191,7 @@ This repository is **not a real product.** It is a deliberately simple "guinea p
 Two modules, sized to produce different review complexity tiers:
 
 - **`auth/`** — JWT generation/validation (`JwtValidator`) and a simple login endpoint (`AuthController`), backed by fixed in-memory credentials with no production hardening. Intended to seed **hard**-tier review PRs.
-- **`tasks/`** — task CRUD over REST (`GET/POST/PUT/DELETE /tasks`) with in-memory storage (`TaskService`). Intended to seed **medium**-tier review PRs.
+- **`tasks/`** — task CRUD over REST (`GET/POST/PUT/DELETE /tasks`) with in-memory storage (`TaskService`). `GET /tasks` accepts an optional `completed` query parameter — `?completed=true` returns only finished tasks, `?completed=false` only open ones, and omitting it returns everything. Intended to seed **medium**-tier review PRs.
 
 The two modules are intentionally independent at this stage: task CRUD has no authentication wired into it.
 

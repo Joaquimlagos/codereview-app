@@ -18,6 +18,12 @@ public class TaskService {
         return List.copyOf(tasks.values());
     }
 
+    public List<Task> findByCompleted(boolean completed) {
+        return tasks.values().stream()
+                .filter(task -> task.completed() == completed)
+                .toList();
+    }
+
     public Optional<Task> findById(Long id) {
         return Optional.ofNullable(tasks.get(id));
     }

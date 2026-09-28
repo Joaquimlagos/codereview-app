@@ -40,6 +40,17 @@ class TaskControllerTest {
     }
 
     @Test
+    void getAllFiltersByCompletedWhenTheParamIsPresent() throws Exception {
+        when(taskService.findByCompleted(true))
+                .thenReturn(List.of(new Task(2L, "Done", "desc", true)));
+
+        mockMvc.perform(get("/tasks").param("completed", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(2))
+                .andExpect(jsonPath("$[0].completed").value(true));
+    }
+
+    @Test
     void getByIdReturnsNotFoundWhenMissing() throws Exception {
         when(taskService.findById(99L)).thenReturn(Optional.empty());
 

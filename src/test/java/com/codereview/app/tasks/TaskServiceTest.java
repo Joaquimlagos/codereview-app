@@ -26,6 +26,22 @@ class TaskServiceTest {
     }
 
     @Test
+    void findByCompletedSplitsDoneFromPending() {
+        Task pending = taskService.create(new Task(null, "Pending", "desc", false));
+        Task done = taskService.create(new Task(null, "Done", "desc", true));
+
+        assertThat(taskService.findByCompleted(true)).extracting(Task::id).containsExactly(done.id());
+        assertThat(taskService.findByCompleted(false)).extracting(Task::id).containsExactly(pending.id());
+    }
+
+    @Test
+    void findByCompletedIsEmptyWhenNothingMatches() {
+        taskService.create(new Task(null, "Pending", "desc", false));
+
+        assertThat(taskService.findByCompleted(true)).isEmpty();
+    }
+
+    @Test
     void findByIdReturnsEmptyWhenMissing() {
         assertThat(taskService.findById(99L)).isEmpty();
     }
