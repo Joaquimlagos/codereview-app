@@ -45,6 +45,57 @@ pull_request: opened │ synchronize │ reopened
 
 The diff travels through S3 rather than inside the event (claim-check pattern): EventBridge and Step Functions only carry PR metadata plus the object key. The lightweight stats ride along in the event so `codereview-lambda`'s `RouteModel` can pick a complexity tier without fetching the full diff from S3 in the common case.
 
+## Review exclusions
+
+Some files cost tokens without teaching the reviewer anything. The diff sent to the pipeline leaves them out.
+
+**This does not touch the pull request.** Every changed file still shows up under "Files changed" on GitHub, still counts for `mvn test`, and still needs human review. The exclusion applies only to the diff uploaded to S3, which means excluded files are absent from `filesChanged`, `linesAdded`, `linesRemoved` and `paths` in the event, and never reach `RouteModel`, the RAG step, or the LLM.
+
+### Default list
+
+| Category | Patterns |
+| --- | --- |
+| Documentation | `*.md`, `*.txt`, `docs/**`, `LICENSE` |
+| Generated and lock files | `*.lock`, `**/target/**` |
+| Binaries and media | `*.png`, `*.jpg`, `*.jpeg`, `*.gif`, `*.ico`, `*.webp`, `*.pdf`, `*.zip`, `*.jar`, `*.class`, `*.woff`, `*.woff2`, `*.ttf`, `*.otf` |
+
+Two things are deliberately **not** excluded. YAML and everything under `.github/workflows/` stay reviewable, because CI configuration is security-relevant — a workflow change is exactly the kind of diff worth a second pair of eyes. And `*.svg` stays reviewable: it is text, it can carry script, and excluding it would create a blind spot for little gain.
+
+Be aware that binaries were never expensive to begin with — git renders them as `Binary files differ`, with no line content. Excluding them keeps `paths` tidy; the real token saving comes from `*.md` and `docs/**`.
+
+### Overriding the list
+
+Drop a `.codereview.yml` at the repository root:
+
+```yaml
+exclude:
+  - "*.md"
+  - "docs/**"
+  - "src/generated/**"
+```
+
+The file replaces the default list rather than adding to it. An `exclude` key that is missing or empty means nothing is excluded — every changed file gets reviewed — and the run logs a warning, so a typo'd key errs towards more review rather than less.
+
+**Patterns are [git pathspecs](https://git-scm.com/docs/gitglossary#Documentation/gitglossary.txt-aiddefpathspecapathspec), not full `.gitignore` syntax.** Each one is passed to `git diff` as `:(exclude)<pattern>`. In practice:
+
+| Pattern | Matches |
+| --- | --- |
+| `*.md` | every `.md` at any depth — `*` crosses `/`, so this covers `README.md` and `.claude/rules/language.md` alike |
+| `docs/**` | the whole `docs` tree |
+| `LICENSE` | that exact path at the repository root |
+
+There is no negation: `.gitignore`'s `!pattern` has no pathspec equivalent, so a list cannot re-include something it excluded. Write a narrower pattern instead.
+
+### The config is read from the merge base
+
+The workflow reads `.codereview.yml` from the **merge base**, not from the pull request's head. A change to the file therefore takes effect only once it is merged — editing it in a PR does not affect that same PR's review.
+
+That is on purpose. Reading it from the head would let a pull request add its own files to the exclusion list and skip its own review, which is the one thing an exclusion mechanism must not allow.
+
+### When everything is excluded
+
+If every changed file matches the list, the diff comes out empty and the workflow stops there: no upload, no event, no pipeline run. It comments on the PR saying there was nothing to analyse, and the check stays green. Publishing an event instead would cost a Step Functions execution to reach the same conclusion — and the embeddings API rejects an empty diff outright (`content contains an empty Part`), so the run would fail rather than conclude anything.
+
 ## Part of a 3-repo pipeline
 
 | Repository | Role |
