@@ -193,7 +193,7 @@ Two modules, sized to produce different review complexity tiers:
 - **`auth/`** — JWT generation/validation (`JwtValidator`) and a simple login endpoint (`AuthController`), backed by fixed in-memory credentials with no production hardening. Intended to seed **hard**-tier review PRs.
 - **`tasks/`** — task CRUD over REST (`GET/POST/PUT/DELETE /tasks`) with in-memory storage (`TaskService`). Intended to seed **medium**-tier review PRs.
 
-The two modules are intentionally independent at this stage: task CRUD has no authentication wired into it.
+The two modules are intentionally independent at this stage: task CRUD has no authentication wired into it. A task carries its completion state from creation onwards, so a client can post one that is already done.
 
 ### Running it
 

@@ -26,6 +26,16 @@ class TaskServiceTest {
     }
 
     @Test
+    void createKeepsTheCompletedFlagItWasGiven() {
+        Task done = taskService.create(new Task(null, "Already done", "desc", true));
+
+        assertThat(taskService.findById(done.id()))
+                .get()
+                .extracting(Task::completed)
+                .isEqualTo(true);
+    }
+
+    @Test
     void findByIdReturnsEmptyWhenMissing() {
         assertThat(taskService.findById(99L)).isEmpty();
     }
