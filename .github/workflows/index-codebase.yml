@@ -15,6 +15,14 @@ on:
   push:
     branches: [develop]
 
+# One build per branch at a time. A newer push cancels a build still in progress: only the
+# newest develop state matters, cancelling saves embedding quota, and the upload is a single
+# atomic PUT, so a cancelled run never leaves a half-written index. Without this, two runs
+# could finish out of order and publish the older commit's index last.
+concurrency:
+  group: index-codebase-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   index:
     name: Build and publish embedding index
@@ -30,6 +38,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # tree-sitter parses the Java sources for per-method chunking (javalang cannot read
+      # Java 21 records). Pinned in the requirements file: a parser upgrade changes chunk
+      # boundaries, and with them every chunk id in the index.
+      - name: Install index dependencies
+        run: pip install -r scripts/requirements-index.txt
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

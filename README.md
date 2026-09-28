@@ -142,19 +142,21 @@ push to develop
         ▼
 checkout → setup-python 3.12 → OIDC: configure-aws-credentials
         │
-        ├─ python scripts/build_index.py     → index.json
-        │    one Gemini embedding call per file (gemini-embedding-001,
+        ├─ pip install -r scripts/requirements-index.txt   (tree-sitter)
+        ├─ python scripts/build_index.py     → index.json (version 2)
+        │    one chunk per Java method (blocks for other files), embedded
+        │    in batches of up to 100 (gemini-embedding-001,
         │    outputDimensionality=768, taskType=RETRIEVAL_DOCUMENT)
         │
         └─ aws s3 cp index.json
               s3://<artifacts-bucket>/index/develop/index.json
 ```
 
-`codereview-lambda`'s `RetrieveContext` reads that object to rank the project's files against the diff under review.
+`codereview-lambda`'s `RetrieveContext` reads that object to rank the project's code against the diff under review. The workflow has a per-branch concurrency group: a newer push to `develop` cancels a build still running, so an older build can never overwrite a newer index.
 
 **Why `develop` and not `main`:** the AI review runs on pull requests targeting `develop`, so `develop` is the code state the index has to mirror. Indexing `main` would leave the retrieved context stale relative to the code actually being reviewed.
 
-[`scripts/build_index.py`](scripts/build_index.py) uses only the Python standard library, so the runner needs no dependency install step. It indexes everything under `src/` plus `pom.xml`; `target/`, `.git/`, and anything that does not decode as UTF-8 are skipped.
+[`scripts/build_index.py`](scripts/build_index.py) and [`scripts/chunking.py`](scripts/chunking.py) use the Python standard library plus tree-sitter, pinned in [`scripts/requirements-index.txt`](scripts/requirements-index.txt), to parse Java. They index everything under `src/` plus `pom.xml`; `target/`, `.git/`, and anything that does not decode as UTF-8 are skipped. `python scripts/build_index.py --dry-run` prints the chunk counts without calling any API. Their tests run on pull requests that touch `scripts/**` ([`index-script-tests.yml`](.github/workflows/index-script-tests.yml)).
 
 **`README.md` is excluded on purpose**, for two independent reasons. It describes what this repository is *for* — a test bed for the review pipeline — and feeding that to the reviewer as retrieved context biases the review: the model starts reading diffs through "this repo exists to generate test PRs" rather than judging the code on its own terms. It is also the one file large enough to hit the embedding model's 2,048-token input limit, which `gemini-embedding-001` enforces by silently discarding the overflow — a whole-file embedding of this README dropped roughly a quarter of it with no error and no warning. Keep the index limited to source and build definition.
 
@@ -164,21 +166,30 @@ This file is a **shared contract** with `codereview-lambda`. A format change her
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "branch": "develop",
   "commit": "<full 40-char sha>",
   "generatedAt": "<ISO 8601 UTC>",
   "model": "gemini-embedding-001",
   "dimensions": 768,
   "chunks": [
-    { "path": "src/main/java/com/codereview/app/tasks/TaskService.java", "text": "...", "vector": [0.013, -0.087, "..."] }
+    {
+      "id": "src/main/java/com/codereview/app/tasks/TaskService.java#TaskService.create(Task):25-31",
+      "path": "src/main/java/com/codereview/app/tasks/TaskService.java",
+      "kind": "method",
+      "symbol": { "type": "TaskService", "method": "create" },
+      "startLine": 25, "endLine": 31, "part": null,
+      "header": "package com.codereview.app.tasks;\n\n@Service public class TaskService {\n    ...fields...",
+      "text": "public Task create(Task task) { ... }",
+      "vector": [0.013, -0.087, "..."]
+    }
   ]
 }
 ```
 
-Only `vector` comes from the Gemini API. Everything else is assembled by the script: `path`/`text` from the filesystem, `commit`/`branch` from the Actions context, and `model`/`dimensions` from the parameters the script itself used for the call.
+(Line numbers illustrative.) The full definition lives in [codereview-lambda's index contract](https://github.com/Joaquimlagos/codereview-lambda/blob/develop/specs/002-method-chunking/contracts/index-v2.md). Only `vector` comes from the Gemini API; everything else is assembled by the scripts.
 
-**One chunk per file** — each chunk's `text` is the *entire* file, never split. A deliberate first-version simplification, viable because this project is small. Once files start exceeding the embedding model's token limit, or retrieval accuracy degrades from dilution, the next step is per-class/per-method chunking, which requires a `version` bump and a matching change in `codereview-lambda`.
+**One chunk per Java method**, each with a header (package, enclosing type declarations, fields) so it reads on its own. Trivial getters, setters and assign-only constructors are dropped, types with nothing left (records, DTOs) become one chunk each, and other files are split into blocks. Nothing is ever sent over the embedding model's 2,048-token limit, which it enforces by silently discarding the overflow: anything estimated above 1,800 tokens is split into parts. `path`, `text` and `vector` keep their version-1 meanings, so a consumer that only understands version 1 still works.
 
 ## The application under test
 
