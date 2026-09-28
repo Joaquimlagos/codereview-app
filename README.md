@@ -205,6 +205,8 @@ mvn spring-boot:run
 
 Starts on port `8080` (see [`src/main/resources/application.yml`](src/main/resources/application.yml)). No external database or service is needed — tasks are held in memory and login uses fixed in-memory credentials.
 
+The same goes for the test suite: a clean checkout can run `mvn test` straight away, with nothing to provision first. Both modules keep their state in memory, so tests never touch a database and never need a container.
+
 ```bash
 mvn test
 ```
