@@ -1,12 +1,11 @@
-# CONFIGURATION REQUIRED — codereview-infra is deployed and these AWS
-# resources exist; what's missing is registering their values by hand in
-# this repo's GitHub settings (Settings > Secrets and variables > Actions).
-# Until then the "trigger-review" job fails at the AWS authentication step:
+# Configuration — values registered in this repo's GitHub settings
+# (Settings > Secrets and variables > Actions). If one is missing or wrong,
+# the "trigger-review" job fails at the AWS authentication step:
 #   - Secret   AWS_ROLE_ARN           — `terraform output -raw github_actions_pr_review_role_arn` in codereview-infra
 #   - Variable ARTIFACTS_BUCKET_NAME  — the shared artifacts S3 bucket (codereview-artifacts),
 #                                       which holds PR diffs under prs/ and the RAG index under index/
 #   - Variable EVENT_BUS_NAME         — the EventBridge bus name (codereview-bus)
-# See README.md, section "Pending configuration".
+# See README.md, section "GitHub configuration".
 name: PR Checks
 
 on:

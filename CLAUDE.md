@@ -20,13 +20,13 @@ Simple Task Manager REST API (Java 21 + Spring Boot) used as a "guinea pig" to g
 ```
 src/main/java/com/codereview/app/
 ├── CodereviewAppApplication.java
-├── auth/            # JWT login — deliberately simple, meant to seed future "hard" complexity PRs
+├── auth/            # JWT login — deliberately simple, seeds "high" complexity PRs
 │   ├── AuthController.java
 │   ├── JwtValidator.java
 │   ├── InMemoryUsers.java
 │   ├── LoginRequest.java
 │   └── LoginResponse.java
-└── tasks/           # Task CRUD, in-memory storage — meant to seed future "medium" complexity PRs
+└── tasks/           # Task CRUD, in-memory storage — seeds "medium" complexity PRs
     ├── Task.java
     ├── TaskController.java
     └── TaskService.java
@@ -72,29 +72,9 @@ This repo only *triggers* the pipeline; it has no dependency on, and no knowledg
 
 ### `index.json` — shared contract with codereview-lambda
 
-`codereview-lambda`'s `RetrieveContext` reads this file, so the schema is a cross-repo contract: a format change here breaks the consumer there. Bump `version` and align both repos when changing it. The authoritative definition is [codereview-lambda's index-v2 contract](https://github.com/Joaquimlagos/codereview-lambda/blob/develop/specs/002-method-chunking/contracts/index-v2.md); `RetrieveContext` reads versions 1 and 2.
+`codereview-lambda`'s `RetrieveContext` reads this file, so the schema is a cross-repo contract: a format change here breaks the consumer there. Bump `version` and align both repos when changing it. The schema is defined only in [codereview-lambda's index-v2 contract](https://github.com/Joaquimlagos/codereview-lambda/blob/main/specs/002-method-chunking/contracts/index-v2.md) — read it there, don't copy it here; `RetrieveContext` reads versions 1 and 2.
 
-```json
-{
-  "version": 2,
-  "branch": "develop",
-  "commit": "<full 40-char sha>",
-  "generatedAt": "<ISO 8601 UTC>",
-  "model": "gemini-embedding-001",
-  "dimensions": 768,
-  "chunks": [{
-    "id": "src/.../JwtValidator.java#JwtValidator.isValid(String):44-46",
-    "path": "src/...", "kind": "method | type | block",
-    "symbol": { "type": "JwtValidator", "method": "isValid" },
-    "startLine": 44, "endLine": 46, "part": null,
-    "header": "<package, enclosing type declarations, fields>",
-    "text": "<the method body>",
-    "vector": [768 floats]
-  }]
-}
-```
-
-Only `vector` comes from the Gemini API (`batchEmbedContents`, up to 100 inputs per call, `outputDimensionality=768`, `taskType=RETRIEVAL_DOCUMENT`, embedding `header + "\n" + text`). Everything else is assembled by the scripts: chunks from the filesystem, `commit`/`branch` from the Actions context, `model`/`dimensions` from the parameters the script chose for the call. **`path`, `text` and `vector` keep their version-1 names and meanings on purpose**: a `RetrieveContext` that only knows version 1 still ranks a version-2 index without error, so the two repos can deploy in either order.
+Only `vector` comes from the Gemini API (`batchEmbedContents`, up to 100 inputs per call, `outputDimensionality=768`, `taskType=RETRIEVAL_DOCUMENT`, embedding `header + "\n" + text`). Everything else is assembled by the scripts. **`path`, `text` and `vector` keep their version-1 names and meanings on purpose**: a `RetrieveContext` that only knows version 1 still ranks a version-2 index without error, so the two repos can deploy in either order.
 
 **One chunk per Java method** (`scripts/chunking.py`, tree-sitter; javalang cannot parse Java 21 records). Each chunk carries a header, the package plus every enclosing type's declaration plus the innermost type's fields, so a method is understandable on its own. Trivial methods (plain getters/setters, empty bodies, assign-only constructors) are dropped; a type left with no chunk (a record, a DTO) becomes one `type` chunk. Non-Java files are cut into `block` chunks at blank lines. **No chunk is ever sent over the embedding limit**: `gemini-embedding-001` silently drops input past 2,048 tokens, so anything estimated above 1,800 tokens (characters / 3, which over-counts every tokenizer measured here) is split into `part`s that each repeat the header. Chunk ids are stable across builds for unchanged code.
 
@@ -104,7 +84,7 @@ Only `vector` comes from the Gemini API (`batchEmbedContents`, up to 100 inputs 
 
 The index scripts use the Python standard library (`urllib.request` for the HTTP calls) **plus one approved exception: tree-sitter**, pinned in `scripts/requirements-index.txt` and installed by both index workflows. A Java parser is the one thing the standard library can't provide. Don't add other dependencies. `tree-sitter` is pinned to 0.25.2, not 0.26.0, which corrupted memory while walking large methods on Windows/CPython 3.12; any version bump changes chunk boundaries and therefore every chunk id, so bump it deliberately and check the `--dry-run` counts.
 
-`codereview-infra` is deployed, so the AWS resources both workflows target already exist. What's still missing is registering their values in this repo's GitHub settings: `AWS_ROLE_ARN` and `GEMINI_API_KEY` (secrets), `ARTIFACTS_BUCKET_NAME` and `EVENT_BUS_NAME` (variables) — until then both workflows fail at the AWS authentication step. `GEMINI_API_KEY` is an Actions secret, distinct from the Secrets Manager secret the Lambdas read at runtime — this repo never reads anything from Secrets Manager. See the comment block at the top of each workflow file and `README.md` for the exact values.
+Both workflows read `AWS_ROLE_ARN` and `GEMINI_API_KEY` (secrets) and `ARTIFACTS_BUCKET_NAME` and `EVENT_BUS_NAME` (variables) from this repo's GitHub settings; all four are set. `GEMINI_API_KEY` is an Actions secret, distinct from the Secrets Manager secret the Lambdas read at runtime — this repo never reads anything from Secrets Manager. See README's "GitHub configuration" for the values.
 
 One bucket (`codereview-artifacts`), split by prefix: PR diffs under `prs/`, the embedding index under `index/`.
 
