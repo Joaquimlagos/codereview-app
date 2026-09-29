@@ -1,0 +1,9 @@
+# Dependencies of scripts/build_index.py, installed by .github/workflows/index-codebase.yml
+# and index-script-tests.yml. Pinned: a grammar or parser upgrade changes chunk boundaries,
+# and with them every chunk id in the published index.
+tree-sitter==0.25.2
+tree-sitter-java==0.23.5
+#
+# tree-sitter stays at 0.25.2, not 0.26.0: on Windows / CPython 3.12, 0.26.0 corrupted memory
+# while walking a large method's syntax tree (access violations at random points, in about
+# half the runs of the size-guard test); 0.25.2 ran the same script 20 times without one.
