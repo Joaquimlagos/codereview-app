@@ -11,7 +11,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/tasks")
@@ -28,6 +30,20 @@ public class TaskController {
         return taskService.findAll();
     }
 
+    @GetMapping("/overdue")
+    public List<Task> getOverdue() {
+        return taskService.findOverdue(LocalDate.now());
+    }
+
+    @GetMapping("/stats")
+    public ResponseEntity<?> getStats() {
+        try {
+            return ResponseEntity.ok(taskService.getStats(LocalDate.now()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<Task> getById(@PathVariable Long id) {
         return taskService.findById(id)
@@ -38,6 +54,11 @@ public class TaskController {
     @PostMapping
     public ResponseEntity<Task> create(@RequestBody Task task) {
         return ResponseEntity.status(HttpStatus.CREATED).body(taskService.create(task));
+    }
+
+    @PostMapping("/bulk-complete")
+    public List<Task> bulkComplete(@RequestBody List<Long> ids) {
+        return taskService.completeAll(ids);
     }
 
     @PutMapping("/{id}")
