@@ -22,6 +22,12 @@ public class TaskService {
         return Optional.ofNullable(tasks.get(id));
     }
 
+    public List<Task> searchByTitle(String title) {
+        return tasks.values().stream()
+                .filter(task -> task.title() != null && task.title().contains(title))
+                .toList();
+    }
+
     public Task create(Task task) {
         long id = nextId.getAndIncrement();
         Task created = new Task(id, task.title(), task.description(), task.completed());

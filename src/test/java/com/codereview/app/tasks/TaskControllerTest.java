@@ -31,6 +31,24 @@ class TaskControllerTest {
     private TaskService taskService;
 
     @Test
+    void searchReturnsTasksMatchingTitle() throws Exception {
+        when(taskService.searchByTitle("report")).thenReturn(List.of(new Task(1L, "Write report", "desc", false)));
+
+        mockMvc.perform(get("/tasks/search").param("title", "report"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].title").value("Write report"));
+    }
+
+    @Test
+    void searchReturnsEmptyListWhenNothingMatches() throws Exception {
+        when(taskService.searchByTitle("report")).thenReturn(List.of());
+
+        mockMvc.perform(get("/tasks/search").param("title", "report"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+    }
+
+    @Test
     void getAllReturnsTasks() throws Exception {
         when(taskService.findAll()).thenReturn(List.of(new Task(1L, "Title", "desc", false)));
 

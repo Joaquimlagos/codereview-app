@@ -3,6 +3,7 @@ package com.codereview.app.tasks;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +45,26 @@ class TaskServiceTest {
         assertThat(updated).isPresent();
         assertThat(updated.get().title()).isEqualTo("Updated");
         assertThat(updated.get().completed()).isTrue();
+    }
+
+    @Test
+    void searchByTitleReturnsMatchingTasks() {
+        taskService.create(new Task(null, "Write report", "desc", false));
+        taskService.create(new Task(null, "Review report", "desc", false));
+        taskService.create(new Task(null, "Buy groceries", "desc", false));
+
+        List<Task> results = taskService.searchByTitle("report");
+
+        assertThat(results)
+                .extracting(Task::title)
+                .containsExactlyInAnyOrder("Write report", "Review report");
+    }
+
+    @Test
+    void searchByTitleReturnsEmptyWhenNothingMatches() {
+        taskService.create(new Task(null, "Buy groceries", "desc", false));
+
+        assertThat(taskService.searchByTitle("report")).isEmpty();
     }
 
     @Test
