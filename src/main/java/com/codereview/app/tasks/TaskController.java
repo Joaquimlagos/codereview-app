@@ -1,5 +1,6 @@
 package com.codereview.app.tasks;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -9,9 +10,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/tasks")
@@ -26,6 +29,25 @@ public class TaskController {
     @GetMapping
     public List<Task> getAll() {
         return taskService.findAll();
+    }
+
+    @GetMapping("/search")
+    public List<Task> search(@RequestParam(defaultValue = "") String q,
+                             @RequestParam(defaultValue = "0") int page,
+                             @RequestParam(defaultValue = "20") int size) {
+        return taskService.search(q, page, size);
+    }
+
+    @GetMapping("/tags/summary")
+    public Map<String, Long> tagSummary() {
+        return taskService.tagSummary();
+    }
+
+    @GetMapping(value = "/export.csv", produces = "text/csv")
+    public ResponseEntity<String> exportCsv() {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"tasks.csv\"")
+                .body(TaskCsv.write(taskService.findAll()));
     }
 
     @GetMapping("/{id}")
@@ -43,6 +65,13 @@ public class TaskController {
     @PutMapping("/{id}")
     public ResponseEntity<Task> update(@PathVariable Long id, @RequestBody Task task) {
         return taskService.update(id, task)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/{id}/tags")
+    public ResponseEntity<Task> addTags(@PathVariable Long id, @RequestBody List<String> tags) {
+        return taskService.addTags(id, tags)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
